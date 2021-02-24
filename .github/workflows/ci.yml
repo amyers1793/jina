@@ -138,8 +138,6 @@ jobs:
       - name: Test
         id: test
         run: |
-          curl https://ipinfo.io/ip
-          nproc
           python mem_info.py &
           if [[ "${{ matrix.test-path }}" == "tests/distributed/test_against_external_daemon/" ]]; then
             docker build -f Dockerfiles/debianx.Dockerfile -t jinaai/jina:test-daemon .
