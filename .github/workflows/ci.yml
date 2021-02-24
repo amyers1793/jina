@@ -139,10 +139,9 @@ jobs:
       - name: Test
         id: test
         run: |
+          curl https://ipinfo.io/ip
           nproc
-          hostname -I
-          vmstat -s
-          cat /proc/meminfo
+          python mem_info.py &
           if [[ "${{ matrix.test-path }}" == "tests/distributed/test_against_external_daemon/" ]]; then
             docker build -f Dockerfiles/debianx.Dockerfile -t jinaai/jina:test-daemon .
             docker run --name jinad -v /var/run/docker.sock:/var/run/docker.sock --network=host -d jinaai/jina:test-daemon
