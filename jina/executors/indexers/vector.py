@@ -26,22 +26,21 @@ class BaseNumpyIndexer(BaseVectorIndexer):
         Setting :attr:`compress_level`>0 gives a smaller file size on the disk in the index time. However, in the query
         time it loads all data into memory at once. Not ideal for large scale application.
 
-        Setting :attr:`compress_level`=0 enables :func:`np.memmap`, which loads data in an on-demanding way and
+        Setting :attr:`compress_level`=0 enables :func:`np.memmap`, which loads data in an on-demand way and
         gives smaller memory footprint in the query time. However, it often gives larger file size on the disk.
+
+    :param compress_level: The compresslevel argument is an integer from 0 to 9 controlling the
+                    level of compression; 1 is fastest and produces the least compression,
+                    and 9 is slowest and produces the most compression. 0 is no compression
+                    at all. The default is 9.
+    :param ref_indexer: Bootstrap the current indexer from a ``ref_indexer``. This enables user to switch
+                        the query algorithm at the query time.
     """
 
     def __init__(self,
                  compress_level: int = 1,
                  ref_indexer: Optional['BaseNumpyIndexer'] = None,
                  *args, **kwargs):
-        """
-        :param compress_level: The compresslevel argument is an integer from 0 to 9 controlling the
-                        level of compression; 1 is fastest and produces the least compression,
-                        and 9 is slowest and produces the most compression. 0 is no compression
-                        at all. The default is 9.
-        :param ref_indexer: Bootstrap the current indexer from a ``ref_indexer``. This enables user to switch
-                            the query algorithm at the query time.
-        """
         super().__init__(*args, **kwargs)
         self.num_dim = None
         self.dtype = None
@@ -70,43 +69,51 @@ class BaseNumpyIndexer(BaseVectorIndexer):
                                 f'index_filename overriden from `ref_indexer` to {ref_indexer.index_filename}')
             self.ref_indexer_workspace_name = ref_indexer.workspace_name
 
-    def post_init(self):
-        super().post_init()
-
     def _delete_invalid_indices(self):
-        # problem is data is not flushed there yet.
-        # self.write_handler.close()
-        # self.handler_mutex = False
         valid = self.valid_indices[self.valid_indices == True]  # noqa
         if len(valid) != len(self.valid_indices):
+            self._clean_memmap(len(valid))
 
-            deleted_keys = len(self.valid_indices[self.valid_indices == False])
-            tmp_ndarray = np.memmap(self.index_abspath, dtype=self.dtype, mode='r',
-                                 shape=(self.size + deleted_keys, self.num_dim))
-            open(self.index_abspath+'tmp', 'wb')
-            valid_ndarray = np.memmap(self.index_abspath+'tmp', dtype=self.dtype, mode='r+',
-                                 shape=(len(valid), self.num_dim))
-            valid_ndarray[:] = tmp_ndarray[self.valid_indices]
-            valid_ndarray.flush()
-            del tmp_ndarray
-            os.remove(self.index_abspath)
-            os.rename(self.index_abspath+'tmp', self.index_abspath)
-
-            valid_key_bytes = np.frombuffer(self.key_bytes, dtype=(np.str_, self.key_length))[self.valid_indices].tobytes()
+            valid_key_bytes = np.frombuffer(self.key_bytes, dtype=(np.str_, self.key_length))[
+                self.valid_indices].tobytes()
             self.key_bytes = valid_key_bytes
             self._size = len(valid)
             self.valid_indices = valid
-            # self._int2ext_id = self._int2ext_id[valid]
 
-    def __setstate__(self, d):
-        # called on load
-        d = super().__setstate__(d)
+    def _clean_memmap(self, new_size):
+        if self.write_handler and not self.write_handler.closed:
+            self.write_handler.flush()
+            self.write_handler.close()
+        try:
+            del self.CACHED__raw_ndarray
+        except:
+            pass
+        filtered_data = self._raw_ndarray[self.valid_indices]
+        if self.compress_level > 0:
+            new_gzip_fh = gzip.open(self.index_abspath, 'wb', compresslevel=self.compress_level)
+            new_gzip_fh.write(filtered_data.tobytes())
+            new_gzip_fh.close()
+        else:
+            original_memmap = np.memmap(self.index_abspath, dtype=self.dtype, mode='r+',
+                                        shape=(new_size, self.num_dim))
+            original_memmap[:] = filtered_data
+            original_memmap.flush()
+
+    def __getstate__(self):
+        # called on pickle save
+        # TODO param
+        # TODO benchmark
         self._delete_invalid_indices()
+        d = super().__getstate__()
         return d
 
     @property
     def workspace_name(self):
-        """Get the workspace name."""
+        """Get the workspace name.
+
+
+        .. # noqa: DAR201
+        """
         return self.name if self.ref_indexer_workspace_name is None else self.ref_indexer_workspace_name
 
     @property
@@ -115,6 +122,8 @@ class BaseNumpyIndexer(BaseVectorIndexer):
 
         Use index_abspath
 
+
+        .. # noqa: DAR201
         """
         return self.get_file_from_workspace(self.index_filename)
 
@@ -160,6 +169,8 @@ class BaseNumpyIndexer(BaseVectorIndexer):
 
         :param keys: a list of ``id``, i.e. ``doc.id`` in protobuf
         :param vectors: embeddings
+        :param args: not used
+        :param kwargs: not used
         """
         np_keys = np.array(keys, (np.str_, self.key_length))
         self._add(np_keys, vectors)
@@ -177,6 +188,8 @@ class BaseNumpyIndexer(BaseVectorIndexer):
 
         :param keys: a list of ``id``, i.e. ``doc.id`` in protobuf
         :param vectors: embeddings
+        :param args: not used
+        :param kwargs: not used
         """
         # noinspection PyTypeChecker
         if self.size:
@@ -199,6 +212,8 @@ class BaseNumpyIndexer(BaseVectorIndexer):
         """Delete the embeddings from the index via document ids.
 
         :param keys: a list of ``id``, i.e. ``doc.id`` in protobuf
+        :param args: not used
+        :param kwargs: not used
         """
         if self.size:
             keys = self._filter_nonexistent_keys(keys, self._ext2int_id.keys())
@@ -222,17 +237,20 @@ class BaseNumpyIndexer(BaseVectorIndexer):
             return self.build_advanced_index(vecs)
 
     def build_advanced_index(self, vecs: 'np.ndarray'):
-        """Build advanced index structure based on in-memory numpy ndarray, e.g. graph, tree, etc.
+        """Not implemented here.
 
-        :param vecs: the raw numpy ndarray
-        :return:
+
+        .. # noqa: DAR201
+
+
+        .. # noqa: DAR101
         """
         raise NotImplementedError
 
-    def _load_gzip(self, abspath: str) -> Optional['np.ndarray']:
+    def _load_gzip(self, abspath: str, mode='rb') -> Optional['np.ndarray']:
         try:
             self.logger.info(f'loading index from {abspath}...')
-            with gzip.open(abspath, 'rb') as fp:
+            with gzip.open(abspath, mode) as fp:
                 return np.frombuffer(fp.read(), dtype=self.dtype).reshape([-1, self.num_dim])
         except EOFError:
             self.logger.error(
@@ -258,6 +276,8 @@ class BaseNumpyIndexer(BaseVectorIndexer):
         Search the index by the external key (passed during `.add(`).
 
         :param keys: a list of ``id``, i.e. ``doc.id`` in protobuf
+        :param args: not used
+        :param kwargs: not used
         :return: ndarray of vectors
         """
         keys = self._filter_nonexistent_keys(keys, self._ext2int_id.keys())
@@ -269,7 +289,11 @@ class BaseNumpyIndexer(BaseVectorIndexer):
 
     @cached_property
     def _int2ext_id(self) -> Optional['np.ndarray']:
-        """Convert internal ids (0,1,2,3,4,...) to external ids (random strings) """
+        """Convert internal ids (0,1,2,3,4,...) to external ids (random strings)
+
+
+        .. # noqa: DAR201
+        """
         if self.key_bytes:
             r = np.frombuffer(self.key_bytes, dtype=(np.str_, self.key_length))
             # `==` is required. `is False` does not work in np
@@ -284,7 +308,11 @@ class BaseNumpyIndexer(BaseVectorIndexer):
 
     @cached_property
     def _ext2int_id(self) -> Optional[Dict]:
-        """Convert external ids (random strings) to internal ids (0,1,2,3,4,...) """
+        """Convert external ids (random strings) to internal ids (0,1,2,3,4,...)
+
+
+        .. # noqa: DAR201
+        """
         if self._int2ext_id is not None:
             return {k: idx for idx, k in enumerate(self._int2ext_id)}
 
@@ -325,26 +353,25 @@ def _cosine(A_norm_ext, B_norm_ext):
 
 
 class NumpyIndexer(BaseNumpyIndexer):
-    """An exhaustive vector indexers implemented with numpy and scipy. """
+    """An exhaustive vector indexers implemented with numpy and scipy.
 
+    .. note::
+        Metrics other than `cosine` and `euclidean` requires ``scipy`` installed.
+
+    :param metric: The distance metric to use. `braycurtis`, `canberra`, `chebyshev`, `cityblock`, `correlation`,
+                    `cosine`, `dice`, `euclidean`, `hamming`, `jaccard`, `jensenshannon`, `kulsinski`,
+                    `mahalanobis`,
+                    `matching`, `minkowski`, `rogerstanimoto`, `russellrao`, `seuclidean`, `sokalmichener`,
+                    `sokalsneath`, `sqeuclidean`, `wminkowski`, `yule`.
+    :param backend: `numpy` or `scipy`, `numpy` only supports `euclidean` and `cosine` distance
+    :param compress_level: compression level to use
+    """
     batch_size = 512
 
     def __init__(self, metric: str = 'cosine',
                  backend: str = 'numpy',
                  compress_level: int = 0,
                  *args, **kwargs):
-        """
-        :param metric: The distance metric to use. `braycurtis`, `canberra`, `chebyshev`, `cityblock`, `correlation`,
-                        `cosine`, `dice`, `euclidean`, `hamming`, `jaccard`, `jensenshannon`, `kulsinski`,
-                        `mahalanobis`,
-                        `matching`, `minkowski`, `rogerstanimoto`, `russellrao`, `seuclidean`, `sokalmichener`,
-                        `sokalsneath`, `sqeuclidean`, `wminkowski`, `yule`.
-        :param backend: `numpy` or `scipy`, `numpy` only supports `euclidean` and `cosine` distance
-
-        .. note::
-            Metrics other than `cosine` and `euclidean` requires ``scipy`` installed.
-
-        """
         super().__init__(*args, compress_level=compress_level, **kwargs)
         self.metric = metric
         self.backend = backend
@@ -356,6 +383,9 @@ class NumpyIndexer(BaseNumpyIndexer):
         Idea is to use partial sort to retrieve top-k smallest distances unsorted and then sort these
         in ascending order. Equivalent to full sort but faster for n >> k. If k >= n revert to full sort.
 
+        :param dist: the distances
+        :param top_k: nr to limit
+        :return: tuple of indices, computed distances
         """
         if top_k >= dist.shape[1]:
             idx = dist.argsort(axis=1)[:, :top_k]
@@ -380,6 +410,11 @@ class NumpyIndexer(BaseNumpyIndexer):
 
             Distance (the smaller the better) is returned, not the score.
 
+        :param vectors: the vectors with which to search
+        :param *args: not used
+        :param **kwargs: not used
+        :param top_k: nr of results to return
+        :return: tuple of indices within matrix and distances
         """
         if self.size == 0:
             return np.array([]), np.array([])

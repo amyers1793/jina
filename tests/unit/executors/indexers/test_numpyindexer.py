@@ -145,7 +145,8 @@ def test_numpy_indexer_known_big(batch_size, compress_level, test_metas):
             assert isinstance(indexer.query_handler, np.memmap)
         idx, dist = indexer.query(queries, top_k=1)
         np.testing.assert_equal(idx, np.array(
-            [['10000'], ['11000'], ['12000'], ['13000'], ['14000'], ['15000'], ['16000'], ['17000'], ['18000'], ['19000']]))
+            [['10000'], ['11000'], ['12000'], ['13000'], ['14000'], ['15000'], ['16000'], ['17000'], ['18000'],
+             ['19000']]))
         assert idx.shape == dist.shape
         assert idx.shape == (10, 1)
         np.testing.assert_equal(indexer.query_by_key(['10000', '15000']), vectors[[0, 5000]])
@@ -181,7 +182,8 @@ def test_scipy_indexer_known_big(compress_level, test_metas):
             assert isinstance(indexer.query_handler, np.memmap)
         idx, dist = indexer.query(queries, top_k=1)
         np.testing.assert_equal(idx, np.array(
-            [['10000'], ['11000'], ['12000'], ['13000'], ['14000'], ['15000'], ['16000'], ['17000'], ['18000'], ['19000']]))
+            [['10000'], ['11000'], ['12000'], ['13000'], ['14000'], ['15000'], ['16000'], ['17000'], ['18000'],
+             ['19000']]))
         assert idx.shape == dist.shape
         assert idx.shape == (10, 1)
         np.testing.assert_equal(indexer.query_by_key(['10000', '15000']), vectors[[0, 5000]])
@@ -366,6 +368,8 @@ def test_numpy_indexer_known_and_delete(batch_size, compress_level, test_metas):
         indexer.save()
 
     with BaseIndexer.load(save_abspath) as indexer:
+        # this tests the real delete
+        assert len(indexer.valid_indices) == indexer.size
         assert isinstance(indexer, NumpyIndexer)
         idx, dist = indexer.query(queries, top_k=top_k)
         np.testing.assert_equal(idx, np.array([['5', '6', '4'], ['5', '6', '4']]))
@@ -424,3 +428,6 @@ def test_numpy_indexer_with_ref_indexer(compress_level, test_metas):
         assert idx.shape == dist.shape
         assert idx.shape == (4, 2)
         np.testing.assert_equal(new_indexer.query_by_key(['7', '4']), vectors[[3, 0]])
+#
+# # TODO add specific test to see if the invalid indices are dropped
+# def test_invalid_deleted():
